@@ -1,0 +1,12 @@
+{
+  "name": "mock-controls-server",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.10.0",
+    "ws": "^8.0.0"
+  }
+}
