@@ -108,8 +108,19 @@ const SENSORS = [
   }
 ]
 
-function makeVfdState(baseFreqHz) {
-  return {
+function calculateGpm(usageType, hz) {
+  switch (usageType) {
+    case 'RPP':  return +(5.027 * hz).toFixed(1)
+    case 'ADP':  return +(5.571 * hz + 14.29).toFixed(1)
+    case 'IPWP':
+    case 'ITP':  return +(2.587 * hz + 1.41).toFixed(1)
+    case 'RAP':  return +(1.334 * hz - 0.55).toFixed(1)
+    default:     return undefined
+  }
+}
+
+function makeVfdState(baseFreqHz, usageType) {
+  const state = {
     setpoint: {
       frequencyHz: baseFreqHz,
       driveMode: 'forward',
@@ -126,6 +137,9 @@ function makeVfdState(baseFreqHz) {
     dcBusVoltage: 310,
     warningCode: 0,
   }
+  const gpm = calculateGpm(usageType, baseFreqHz)
+  if (gpm !== undefined) state.gpmActual = gpm
+  return state
 }
 
 const VFDS = [
@@ -137,7 +151,7 @@ const VFDS = [
     slaveAddress: 1,
     typeId: 'vfd.fuji.frenic-ace',
     config: {},
-    state: makeVfdState(45),
+    state: makeVfdState(0, 'RAP'),
     online: true,
     createdAt: NOW,
     updatedAt: NOW,
@@ -150,7 +164,7 @@ const VFDS = [
     slaveAddress: 1,
     typeId: 'vfd.fuji.frenic-ace',
     config: {},
-    state: makeVfdState(30),
+    state: makeVfdState(0, 'RPP'),
     online: true,
     createdAt: NOW,
     updatedAt: NOW,
@@ -163,7 +177,7 @@ const VFDS = [
     slaveAddress: 1,
     typeId: 'vfd.fuji.frenic-ace',
     config: {},
-    state: makeVfdState(60),
+    state: makeVfdState(0, 'ADP'),
     online: true,
     createdAt: NOW,
     updatedAt: NOW,
@@ -176,7 +190,7 @@ const VFDS = [
     slaveAddress: 1,
     typeId: 'vfd.fuji.frenic-ace',
     config: {},
-    state: makeVfdState(50),
+    state: makeVfdState(0, 'C'),
     online: true,
     createdAt: NOW,
     updatedAt: NOW,
@@ -189,7 +203,7 @@ const VFDS = [
     slaveAddress: 1,
     typeId: 'vfd.fuji.frenic-ace',
     config: {},
-    state: makeVfdState(40),
+    state: makeVfdState(0, 'M'),
     online: true,
     createdAt: NOW,
     updatedAt: NOW,
@@ -202,7 +216,7 @@ const VFDS = [
     slaveAddress: 1,
     typeId: 'vfd.fuji.frenic-ace',
     config: {},
-    state: makeVfdState(55),
+    state: makeVfdState(0, 'IPWP'),
     online: true,
     createdAt: NOW,
     updatedAt: NOW,
@@ -215,7 +229,7 @@ const VFDS = [
     slaveAddress: 1,
     typeId: 'vfd.fuji.frenic-ace',
     config: {},
-    state: makeVfdState(35),
+    state: makeVfdState(0, 'IWCI'),
     online: true,
     createdAt: NOW,
     updatedAt: NOW,
@@ -228,7 +242,7 @@ const VFDS = [
     slaveAddress: 1,
     typeId: 'vfd.fuji.frenic-ace',
     config: {},
-    state: makeVfdState(25),
+    state: makeVfdState(0, 'ITP'),
     online: true,
     createdAt: NOW,
     updatedAt: NOW,
@@ -240,6 +254,14 @@ const DEVICES = [
   ...SENSORS.map(s => ({ ...s, deviceType: 'sensor' })),
   ...VFDS.map(v => ({ ...v, deviceType: 'vfd' })),
 ]
+
+// ─── VFD frequency step state ────────────────────────────────────────────────
+
+const VFD_STEP_STATE = new Map(VFDS.map(v => [v.id, {
+  hz: 0,
+  direction: 1,
+  ticksLeft: Math.ceil(Math.random() * 4),
+}]))
 
 // ─── Mutable in-memory state ─────────────────────────────────────────────────
 
@@ -585,14 +607,25 @@ class Session {
 
         const vfd = VFDS.find(v => v.id === id)
         if (vfd && vfd.state) {
-          const base = vfd.state.setpoint.frequencyHz
-          const jitter = (Math.random() - 0.5) * base * 0.06
-          const actualFreq = +(base + jitter).toFixed(2)
+          const step = VFD_STEP_STATE.get(id)
+          step.ticksLeft--
+          if (step.ticksLeft <= 0) {
+            step.hz += step.direction * 10
+            if (step.hz >= 60) { step.hz = 60; step.direction = -1 }
+            if (step.hz <= 0)  { step.hz = 0;  step.direction = 1 }
+            step.ticksLeft = Math.ceil(Math.random() * 4)
+          }
+          const hz = step.hz
           const delta = [
-            { op: 'replace', path: '/state/actual/frequencyHz', value: actualFreq },
-            { op: 'replace', path: '/state/actual/currentAmps', value: +(actualFreq * 0.05 + (Math.random() - 0.5) * 0.2).toFixed(2) },
-            { op: 'replace', path: '/state/actual/powerKw',     value: +(actualFreq * 0.012 + (Math.random() - 0.5) * 0.05).toFixed(3) },
+            { op: 'replace', path: '/state/setpoint/frequencyHz', value: hz },
+            { op: 'replace', path: '/state/actual/frequencyHz',   value: hz },
+            { op: 'replace', path: '/state/actual/currentAmps',   value: +(hz * 0.05).toFixed(2) },
+            { op: 'replace', path: '/state/actual/powerKw',       value: +(hz * 0.012).toFixed(3) },
           ]
+          const gpm = calculateGpm(vfd.deviceUsageType, hz)
+          if (gpm !== undefined) {
+            delta.push({ op: 'replace', path: '/state/gpmActual', value: gpm })
+          }
           this.dc({ kind: 'evt', event: 'patch', id, data: { type: 'delta', delta }, timestamp: Date.now() })
         }
       }
